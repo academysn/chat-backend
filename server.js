@@ -2,6 +2,7 @@ const http = require('http');
 const WebSocket = require('ws');
 
 const PORT = process.env.PORT || 3000;
+
 const server = http.createServer();
 const wss = new WebSocket.Server({ server });
 
@@ -14,7 +15,7 @@ console.log('🔌 WebSocket Server démarrage...');
 wss.on('connection', (socket) => {
   let currentUserId = null;
 
-  socket.on('message', (message) => {
+  socket.on('message', async (message) => {
     try {
       const data = JSON.parse(message);
 
@@ -24,9 +25,9 @@ wss.on('connection', (socket) => {
         clients.set(currentUserId, socket);
         console.log(`👤 ${currentUserId} connecté`);
 
-        // 🔁 Matchmaking
         if (waitingUser && waitingUser !== currentUserId) {
           const peerSocket = clients.get(waitingUser);
+
           if (peerSocket && peerSocket.readyState === WebSocket.OPEN) {
             peerSocket.send(JSON.stringify({
               type: 'match',
@@ -40,7 +41,6 @@ wss.on('connection', (socket) => {
               caller: false
             }));
 
-            // 🔗 Enregistre le match
             matches.set(currentUserId, waitingUser);
             matches.set(waitingUser, currentUserId);
 
@@ -65,6 +65,68 @@ wss.on('connection', (socket) => {
         }
       }
 
+      // ⏭️ Passage au prochain utilisateur
+      if (data.type === 'next') {
+        const partnerId = matches.get(currentUserId);
+        const partnerSocket = clients.get(partnerId);
+
+        // Notifie le partenaire que l'autre passe
+        if (partnerId && partnerSocket && partnerSocket.readyState === WebSocket.OPEN) {
+          partnerSocket.send(JSON.stringify({
+            type: 'partner-next',
+            peerId: currentUserId
+          }));
+        }
+
+        // Nettoie les anciens matchs
+        matches.delete(currentUserId);
+        matches.delete(partnerId);
+
+        waitingUser = currentUserId;
+        console.log(`⏭️ ${currentUserId} veut un nouveau match`);
+
+        if (partnerId && clients.has(partnerId)) {
+          const peerSocket = clients.get(partnerId);
+          if (peerSocket && peerSocket.readyState === WebSocket.OPEN) {
+            peerSocket.send(JSON.stringify({
+              type: 'match',
+              peerId: currentUserId,
+              caller: true
+            }));
+
+            socket.send(JSON.stringify({
+              type: 'match',
+              peerId: partnerId,
+              caller: false
+            }));
+
+            matches.set(currentUserId, partnerId);
+            matches.set(partnerId, currentUserId);
+            waitingUser = null;
+
+            console.log(`🔁 Nouveau match: ${currentUserId} ↔ ${partnerId}`);
+          }
+        }
+      }
+
+      // 📴 Déconnexion volontaire
+      if (data.type === 'leave') {
+        const partnerId = matches.get(currentUserId);
+        const partnerSocket = clients.get(partnerId);
+        if (partnerId && partnerSocket && partnerSocket.readyState === WebSocket.OPEN) {
+          partnerSocket.send(JSON.stringify({
+            type: "partner-left"
+          }));
+        }
+
+        matches.delete(currentUserId);
+        matches.delete(partnerId);
+        waitingUser = waitingUser === currentUserId ? null : waitingUser;
+
+        clients.delete(currentUserId);
+        console.log(`👋 ${currentUserId} a quitté volontairement`);
+      }
+
     } catch (err) {
       console.error('❌ Erreur message:', err);
     }
@@ -73,23 +135,20 @@ wss.on('connection', (socket) => {
   socket.on('close', () => {
     console.log(`❌ ${currentUserId} déconnecté`);
     clients.delete(currentUserId);
-    if (waitingUser === currentUserId) waitingUser = null;
-
-    // 🔔 Notifie uniquement le partenaire matché
     const partnerId = matches.get(currentUserId);
+
     if (partnerId && clients.has(partnerId)) {
       const partnerSocket = clients.get(partnerId);
-      if (partnerSocket.readyState === WebSocket.OPEN) {
+      if (partnerSocket && partnerSocket.readyState === WebSocket.OPEN) {
         partnerSocket.send(JSON.stringify({
-          type: "partner-left",
-          peerId: currentUserId
+          type: 'partner-left'
         }));
       }
     }
 
-    // ❌ Supprime les deux entrées du match
     matches.delete(currentUserId);
     matches.delete(partnerId);
+    if (waitingUser === currentUserId) waitingUser = null;
   });
 });
 
