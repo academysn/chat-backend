@@ -1,18 +1,12 @@
-// server.js
-
 const http = require('http');
 const WebSocket = require('ws');
 
-// 📌 Render utilise une variable d'environnement PORT
 const PORT = process.env.PORT || 3000;
-
-// Crée un serveur HTTP (même si on n’a pas de frontend ici)
 const server = http.createServer();
-
-// Initialise le WebSocket Server en attachant au serveur HTTP
 const wss = new WebSocket.Server({ server });
 
 const clients = new Map(); // userid -> WebSocket
+const matches = new Map(); // userid -> matchedUserId
 let waitingUser = null;
 
 console.log('🔌 WebSocket Server démarrage...');
@@ -46,6 +40,10 @@ wss.on('connection', (socket) => {
               caller: false
             }));
 
+            // 🔗 Enregistre le match
+            matches.set(currentUserId, waitingUser);
+            matches.set(waitingUser, currentUserId);
+
             console.log(`🔁 Match: ${waitingUser} ↔ ${currentUserId}`);
             waitingUser = null;
           }
@@ -76,10 +74,25 @@ wss.on('connection', (socket) => {
     console.log(`❌ ${currentUserId} déconnecté`);
     clients.delete(currentUserId);
     if (waitingUser === currentUserId) waitingUser = null;
+
+    // 🔔 Notifie uniquement le partenaire matché
+    const partnerId = matches.get(currentUserId);
+    if (partnerId && clients.has(partnerId)) {
+      const partnerSocket = clients.get(partnerId);
+      if (partnerSocket.readyState === WebSocket.OPEN) {
+        partnerSocket.send(JSON.stringify({
+          type: "partner-left",
+          peerId: currentUserId
+        }));
+      }
+    }
+
+    // ❌ Supprime les deux entrées du match
+    matches.delete(currentUserId);
+    matches.delete(partnerId);
   });
 });
 
-// 🚀 Lancer le serveur sur le port Render
 server.listen(PORT, () => {
   console.log(`✅ WebSocket Server en écoute sur le port ${PORT}`);
 });
